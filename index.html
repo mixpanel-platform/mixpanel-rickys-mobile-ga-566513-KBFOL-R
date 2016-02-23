@@ -1,15 +1,349 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
   <head>
-    <meta charset="utf-8">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/css/reset.css">
     <link rel="stylesheet" type="text/css" href="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.css">
     <script src="https://cdn.mxpnl.com/libs/mixpanel-platform/build/mixpanel-platform.v0.latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js" charset="utf-8"></script>
+    <style>
+     #run {
+        margin-top:5px;
+        float:left;
+        clear:both;
+        padding: 6px 12px;
+        background-color: #61adf0;
+        background-image: -webkit-linear-gradient(#6ab5f2,#53a0ee);
+        background-image: linear-gradient(#6ab5f2,#53a0ee);
+        box-shadow: inset 0 1px 1px #77bdf4,0 2px 2px -1px rgba(0,0,0,0.2);
+        text-transform: uppercase;
+        border: 1px solid #4d93d7;
+        color: #fff;
+        text-shadow: 0 -1px 0 rgba(0,0,0,0.2);
+        border-radius: 3px;
+        cursor: pointer;
+        font-weight: bold;
+      }
+
+      .node circle {
+        fill: #fff;
+        stroke: steelblue;
+        stroke-width: 1.5px;
+      }
+
+      .node {
+        font: 10px sans-serif;
+
+      }
+
+      .link {
+        fill: none;
+        stroke: steelblue;
+        stroke-linecap: round;
+      }
+    </style>
   </head>
-  <body class="mixpanel-platform-body">
-    <h1>Hello, World!</h1>
+  <body class="mixpanel-platform-body" style="overflow-x:scroll;">
+      <div id="eventSelect" style="float: left;"></div>
+      <div id="dateRange" style="float: right;"></div>
+      <div style="clear: both;"></div>
+      <button id="run" value="Run" style="margin-left: 10px; display: none;">Run</button>
+      <div class="flow"></div>
     <script>
-      // Run queries and display results here
+      var rootEventSelect = $('#eventSelect').MPEventSelect();
+      var date = $('#dateRange').MPDatepicker();
+      var params = {
+        from: moment().subtract(29, 'days'),
+        to: moment(),
+      }
+      var cqResult;
+      var script = $('#cq').html();
+      script = $.trim(script);
+      
+      function date_to_string(d) {
+          return d.toISOString().split('T')[0];
+      }
+      
+      function mapFlow() {
+        var flows = cqResult;
+        var root = Object.keys(cqResult)[0];
+        flowObject = {
+          'name': flows.count + ': ' + root,
+          'count': flows.count,
+          'children': [],
+          'selected': true
+        }
+        
+        _.each(_.keys(flows.next), function(eventName) {
+          getChildren(flowObject, flows.next[eventName], '', eventName)
+        });
+        createFlow(flowObject);
+      }
+      
+      function getChildren(parentObject, flowParent, prevFlowParent, event) {
+        var next = flowParent.next;
+        var eventObject = {
+          'name': flowParent.count + ': ' + event,
+          'count': flowParent.count,
+          'parent': prevFlowParent,
+          'children': [],
+          'selected': false
+        };
+        
+        if ($.isEmptyObject(next) === false) {
+          for (var eventName in next) {
+            getChildren(eventObject, next[eventName], event, eventName);
+          }
+        }
+        parentObject.children.push(eventObject);
+      }
+      
+      function createFlow(flowObject) {
+        treeRoot = flowObject;
+        treeRoot.x0 = height / 2;
+        treeRoot.y0 = 0;
+
+        function collapse(d) {
+          if (d.children) {
+            d._children = d.children;
+            d._children.forEach(collapse);
+            d.children = null;
+          }
+        }
+
+        treeRoot.children.forEach(collapse);
+        update(treeRoot);      
+      }
+
+      // d3 tree flow
+      var margin = {top: 20, right: 40, bottom: 20, left: 40},
+          width = 960 - margin.right - margin.left,
+          height = 920 - margin.top - margin.bottom;
+
+      var i = 0,
+          duration = 750,
+          treeRoot;
+
+      var tree = d3.layout.tree()
+          .size([height, width]);
+
+      var diagonal = d3.svg.diagonal()
+          .projection(function(d) { return [d.y, d.x]; });
+
+      var svg = d3.select("#flow").append("svg")
+          .attr("width", width + margin.right + margin.left)
+          .attr("height", height + margin.top + margin.bottom)
+          .append("g")
+          .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+      d3.select(self.frameElement).style("height", "800px");
+
+      function update(source) {
+        var flow_length = path_length + 1;
+
+        // Compute the new tree layout.
+        var nodes = tree.nodes(treeRoot).reverse(),
+            links = tree.links(nodes);
+
+        // Normalize for fixed-depth.
+        nodes.forEach(function(d) { d.y = 850 / flow_length * d.depth; });
+        
+        // Find max count
+        var maxCount = 0;
+        nodes.forEach(function(d) { if (d.depth > source.depth) maxCount = d.count > maxCount ? d.count : maxCount });
+
+        var ratio = calculateFlowLine(maxCount);
+
+        // Update the nodes…
+        var node = svg.selectAll("g.node")
+            .data(nodes, function(d) { return d.id || (d.id = ++i); });
+
+        // Enter any new nodes at the parent's previous position.
+        var nodeEnter = node.enter().append("g")
+            .attr("class", function(d) {return d.parent ? "node" : "root node" })
+            .attr("transform", function(d) { return "translate(" + source.y0 + "," + source.x0 + ")"; })
+            .style("-webkit-clip-path", "polygon(-3px 0, " + 750/flow_length + "px 0, " + 750/flow_length + "px 100%, -3px 100%")
+            .style("clip-path", "polygon(-3px 0, " + 750/flow_length + "px 0, " + 750/flow_length + "px 100%, -3px 100%")
+            .on("click", click);
+
+        nodeEnter.append("circle")
+            .attr("r", 1e-6)
+            .style("fill", function(d) { return d.selected ? "#fff" : "lightsteelblue"; });
+
+        nodeEnter.append("text")
+            .attr("dx", 10)
+            .attr("dy", 3)
+            .attr("text-anchor", "start")
+            .text(function(d) { return d.name; })
+            .style("fill-opacity", 1e-6);
+            
+        nodeEnter.append("title")
+            .text(function(d) { return d.name; })
+
+        // Transition nodes to their new position.
+        var nodeUpdate = node.transition()
+            .duration(duration)
+            .attr("transform", function(d) { return "translate(" + d.y + "," + d.x + ")"; });
+
+        nodeUpdate.select("circle")
+            .attr("r", 4.5)
+            .style("fill", function(d) { return d.selected ? "#fff" : "lightsteelblue"; });
+
+        nodeUpdate.select("text")
+            .style("fill-opacity", 1)
+            .style("font-weight", function(d) {return d.selected ? "bold" : "normal"; });
+
+        // Transition exiting nodes to the parent's new position.
+        var nodeExit = node.exit().transition()
+            .duration(duration)
+            .attr("transform", function(d) { return "translate(" + source.y + "," + source.x + ")"; })
+            .remove();
+
+        nodeExit.select("circle")
+            .attr("r", 1e-6);
+
+        nodeExit.select("text")
+            .style("fill-opacity", 1e-6);
+
+        // Update the links…
+        var link = svg.selectAll("path.link")
+            .data(links, function(d) { return d.target.id; });
+
+        // Enter any new links at the parent's previous position.
+        link.enter().insert("path", "g")
+            .attr("class", "link")
+            .style("stroke-width", function(d) { 
+              var width = d.target.count * ratio > 1 ? d.target.count * ratio : 1;
+              return width;
+            })
+            .attr("d", function(d) {
+              var o = {x: source.x0, y: source.y0};
+              return diagonal({source: o, target: o});
+            });
+
+        // Transition links to their new position.
+        link.transition()
+            .duration(duration)
+            .attr("d", diagonal);
+
+        // Transition exiting nodes to the parent's new position.
+        link.exit().transition()
+            .duration(duration)
+            .attr("d", function(d) {
+              var o = {x: source.x, y: source.y};
+              return diagonal({source: o, target: o});
+            })
+            .remove();
+
+        // Stash the old positions for transition.
+        nodes.forEach(function(d) {
+          d.x0 = d.x;
+          d.y0 = d.y;
+        });
+      }
+
+      // Toggle children on click.
+      function click(d) {
+        if (d.selected) {
+          d._children = d.children;
+          d.children = null;
+          d.selected = false;
+          funnel_select.pop(d);
+        } else {
+          d.children = d._children;
+          d._children = null;
+          d.selected = true;
+          funnel_select.push(d);
+        }
+        update(d);
+      }
+
+        
+      date.on('change', function(e, dates) {
+        params.from = dates.from;
+        params.to = dates.to;
+      });
+      
+      rootEventSelect.on('change', function(e, Name){
+        console.log('hi')
+        $('#run').show();
+      });
+      
+      $('#run').on('click', function(e){
+        rootEvent = rootEventSelect.val();
+        queryParams = {
+          'first_event': rootEvent,
+          'max_depth': 5,
+          'from_date': date_to_string(params.from),
+          'to_date': date_to_string(params.to)
+        }
+        MP.api.custom_query(script, queryParams).done(function(results) {
+          cqResult = results[0];
+          mapFlow();
+        });
+      });
+    </script>
+    <script type="text/cq" id="cq">
+        var main = function() {
+            return Events({
+                from_date: params.from_date,
+                to_date: params.to_date,
+            })
+            .groupByUser(function(flow, events) {
+                flow = flow || { depth: 0 };
+                flow.current = flow.current || flow;
+                for (var i = 0; i < events.length; i++) {
+                    var e = events[i];
+                    var eventName;
+                    if (e.name == 'Page Loaded') {
+                        var url = e.properties['$current_url'];
+                        var urlClip = url.indexOf('.com');
+                        eventName = 'Page Loaded: ' + url.substr(urlClip+4)
+                    } else {
+                        eventName = e.name;
+                    }
+                    if (flow.depth === 0 && eventName != params.first_event) {
+                        continue;
+                    }
+                    if (flow.depth === params.max_depth) {
+                        return flow;
+                    }
+                    flow.depth++;
+                    flow.current[eventName] = flow.current[eventName] || {'count': 0, 'next': {}};
+                    flow.current[eventName].count++;
+                    flow.current = flow.current[eventName].next;
+                }
+                return flow;
+            })
+            .reduce(function(accumulators, items) {
+                var result = {};
+                for (var i = 0; i < accumulators.length; i++) {
+                    mergeInPlace(result, accumulators[i]);
+                }
+                for (var i = 0; i < items.length; i++) {
+                    delete items[i].value.depth;
+                    delete items[i].value.current;
+                    mergeInPlace(result, items[i].value);
+                }
+                return result;
+            });
+        };
+        
+        function mergeInPlace(d1, d2) {
+            for (var key in d2) {
+                var v1 = d1[key],
+                    v2 = d2[key];
+        
+                if (!(key in d1)) {
+                    d1[key] = v2;
+                } else if (typeof v1 === "number" && typeof v2 === "number") {
+                    d1[key] += v2;
+                } else if (typeof v1 === "object" && typeof v2 === "object") {
+                    mergeInPlace(v1, v2);
+                } else {
+                    throw "mismatched types for key: " + key;
+                }
+            }
+        }
     </script>
   </body>
 </html>
